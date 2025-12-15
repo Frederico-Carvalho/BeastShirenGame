@@ -1,126 +1,266 @@
 using UnityEngine;
-using static UnityEngine.Rendering.DebugUI;
 
 [RequireComponent(typeof(Rigidbody))]
 public class FighterController : MonoBehaviour
 {
-    // MOVIMENTO 
+    //MOVEMENT
     [SerializeField] private float runSpeed = 5f;
-    public float RunSpeed { get { return runSpeed; } set { runSpeed = value; } }
+    [SerializeField] private float jumpForce = 7f;
 
     [SerializeField] private Rigidbody rb;
 
-    // ESTADOS 
-    private enum FighterState { Idle, Walk, Jump, Attack }
-    [SerializeField] private FighterState state = FighterState.Idle;
+    //GROUND CHECK 
+    [SerializeField] private Transform groundCheck;
+    [SerializeField] private float groundRadius = 0.15f;
+    [SerializeField] private LayerMask groundLayer;
 
-    //  ANIMAÇÃO 
+    private bool isGrounded;
+    public bool IsGrounded { get { return isGrounded; } }
+
+    //ANIMATION
     [SerializeField] private SpriteAnimator animator;
 
-    // ATAQUES 
-    [SerializeField] private AttackDataSO lightAttack;
-    [SerializeField] private Hitbox hitbox;
-    private int attackFrame;
-    private AttackDataSO currentAttack;
 
-    // VIDA 
+    //ATTACKS
+    [SerializeField] private AttackDataSO lightAttack;
+    [SerializeField] private AttackDataSO heavyAttack;
+    [SerializeField] private AttackDataSO jumpAttack;
+    [SerializeField] private Hitbox hitbox;
+
+    private AttackDataSO currentAttack;
+    private int attackFrame;
+
+    //OPPONENT DIRECTION
+    [SerializeField] private Transform opponent;
+
+    //STATE
+    private enum State { Idle, Walk, Jump, AirDash, Attack }
+    private State state = State.Idle;
+
+    //HP
     [SerializeField] private int maxHealth = 100;
     private int health;
-    public int Health { get { return health; } private set { health = value; } }
+    public int Health { get { return health; } }
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
-        Health = maxHealth;
+        health = maxHealth;
         hitbox.gameObject.SetActive(false);
     }
 
     private void Update()
     {
-        HandleState();
-        AnimateState();
+        CheckGround();
+        HandleInput();
+        HandleAirDash();
+        HandleAirDashInput();
+        HandleAttack();
+        Animate();
     }
 
     private void FixedUpdate()
     {
-        if (state == FighterState.Walk)
+        if (state == State.Walk)
         {
-            Move();
-        }
-        else if (state != FighterState.Attack)
-        {
-            rb.linearVelocity = new Vector3(0f, rb.linearVelocity.y, 0f);
+            float input = Input.GetAxisRaw("Horizontal");
+            rb.linearVelocity = new Vector3(input * runSpeed, rb.linearVelocity.y, 0f);
         }
     }
 
-    //ESTADOS
-    private void HandleState()
+    //  INPUT
+    private void HandleInput()
     {
         float input = Input.GetAxisRaw("Horizontal");
 
-        if (state == FighterState.Idle || state == FighterState.Walk)
+        if (state == State.Idle || state == State.Walk)
         {
-            if (input != 0f)
-                state = FighterState.Walk;
+            if (isGrounded)
+                state = input != 0f ? State.Walk : State.Idle;
+        }
+
+
+        if (Input.GetKeyDown(KeyCode.Space) && isGrounded)
+        {
+            Jump();
+        }
+
+        if (Input.GetKeyDown(KeyCode.J))
+        {
+            if (isGrounded)
+                StartAttack(lightAttack);
             else
-                state = FighterState.Idle;
+                StartAttack(jumpAttack);
         }
 
-        if (Input.GetKeyDown(KeyCode.J) && state != FighterState.Attack)
+        if (Input.GetKeyDown(KeyCode.K) && isGrounded)
         {
-            state = FighterState.Attack;
-            currentAttack = lightAttack;
-            attackFrame = 0;
-        }
-
-        if (state == FighterState.Attack)
-        {
-            attackFrame++;
-
-            if (attackFrame == currentAttack.Startup)
-            {
-                hitbox.Damage = currentAttack.Damage;
-                hitbox.gameObject.SetActive(true);
-            }
-            if (attackFrame == currentAttack.Startup + currentAttack.Active)
-            {
-                hitbox.gameObject.SetActive(false);
-            }
-            if (attackFrame >= currentAttack.TotalFrames)
-            {
-                state = FighterState.Idle;
-            }
+            StartAttack(heavyAttack);
         }
     }
 
-    //MOVIMENTO 
-    private void Move()
+    //Walk toward/away from opponent
+    private bool IsMovingForward(float input)
     {
-        float input = Input.GetAxisRaw("Horizontal");
-        rb.linearVelocity = new Vector3(input * runSpeed, rb.linearVelocity.y, 0f);
+        float directionToOpponent = opponent.position.x - transform.position.x;
+        return Mathf.Sign(directionToOpponent) == Mathf.Sign(input);
     }
 
-    //ANIMAÇÃO
-    private void AnimateState()
+
+    // AIR DASH
+    [SerializeField] private float airDashSpeed = 8f;
+    [SerializeField] private float airDashDuration = 0.2f;
+    [SerializeField] private float doubleTapTime = 0.25f;
+
+    private bool airDashUsed;
+    private float airDashTimer;
+    private int airDashDirection;
+    private float lastLeftTap;
+    private float lastRightTap;
+
+    private void HandleAirDashInput()
     {
-        switch (state)
+        if (isGrounded) return;
+
+        if (Input.GetKeyDown(KeyCode.A))
         {
-            case FighterState.Idle:
-                animator.PlayIdle();
-                break;
-            case FighterState.Walk:
-                animator.PlayWalk();
-                break;
-            case FighterState.Attack:
-                animator.PlayAttack();
-                break;
+            if (Time.time - lastLeftTap <= doubleTapTime)
+                TryStartAirDash(-1);
+            lastLeftTap = Time.time;
+            UnityEngine.Debug.Log("Key A/D pressed in air");
+        }
+
+        if (Input.GetKeyDown(KeyCode.D))
+        {
+            if (Time.time - lastRightTap <= doubleTapTime)
+                TryStartAirDash(1);
+            lastRightTap = Time.time;
+            UnityEngine.Debug.Log("Key A/D pressed in air");
+        }
+        
+    }
+    // AIR DASH STARTER
+    private void TryStartAirDash(int direction)
+    {
+        if (airDashUsed) return;
+        if (state != State.Jump) return;
+
+        airDashUsed = true;
+        airDashDirection = direction;
+        airDashTimer = airDashDuration;
+
+        rb.linearVelocity = Vector3.zero;
+        state = State.AirDash;
+    }
+    // AIR DASH HANDLER
+    private void HandleAirDash()
+    {
+        if (state != State.AirDash) return;
+
+        airDashTimer -= Time.fixedDeltaTime;
+
+        rb.linearVelocity = new Vector3(
+            airDashDirection * airDashSpeed,
+            0f,
+            0f
+        );
+
+        if (airDashTimer <= 0f)
+        {
+            state = State.Jump;
         }
     }
 
-    // DANO 
+    // JUMP 
+    private void Jump()
+    {
+        rb.linearVelocity = new Vector3(rb.linearVelocity.x, 0f, 0f);
+        rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
+        state = State.Jump;
+    }
+
+    private void CheckGround()
+    {
+        isGrounded = Physics.CheckSphere(groundCheck.position, groundRadius, groundLayer);
+
+        if (isGrounded)
+        {
+            airDashUsed = false;
+        }
+
+        if (isGrounded && rb.linearVelocity.y <= 0f && state == State.Jump)
+        {
+            state = State.Idle;
+        }
+    }
+
+    // ATTACK
+    private void StartAttack(AttackDataSO attack)
+    {
+        if (state == State.Attack) return;
+
+        currentAttack = attack;
+        attackFrame = 0;
+        state = State.Attack;
+    }
+
+    private void HandleAttack()
+    {
+        if (state != State.Attack) return;
+
+        attackFrame++;
+
+        if (attackFrame == currentAttack.Startup)
+        {
+            hitbox.Damage = currentAttack.Damage;
+            hitbox.gameObject.SetActive(true);
+        }
+
+        if (attackFrame == currentAttack.Startup + currentAttack.Active)
+        {
+            hitbox.gameObject.SetActive(false);
+        }
+
+        if (attackFrame >= currentAttack.TotalFrames)
+        {
+            state = isGrounded ? State.Idle : State.Jump;
+        }
+    }
+    // ANIMATION
+    private void Animate()
+    {
+        if (state == State.Idle) animator.PlayIdle();
+        if (state == State.Walk) animator.PlayWalk();
+        if (state == State.Jump) animator.PlayJump();
+
+        if (state == State.Attack)
+        {
+            if (currentAttack == lightAttack) animator.PlayLight();
+            if (currentAttack == heavyAttack) animator.PlayHeavy();
+            if (currentAttack == jumpAttack) animator.PlayJump();
+        }
+        if (state == State.Walk)
+        {
+            float input = Input.GetAxisRaw("Horizontal");
+
+            if (IsMovingForward(input))
+                animator.PlayWalkForward();
+            else
+                animator.PlayWalkBackward();
+        }
+        if (state == State.AirDash)
+        {
+            if (IsMovingForward(airDashDirection))
+                animator.PlayAirDashForward();
+            else
+                animator.PlayAirDashBackward();
+        }
+    }
+
+    //  DAMAGE 
     public void TakeHit(int damage)
     {
-        Health -= damage;
-        Debug.Log("HP: " + Health);
+        health -= damage;
+        UnityEngine.Debug.Log("HP: " + health);
     }
 }

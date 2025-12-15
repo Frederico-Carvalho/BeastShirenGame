@@ -10,10 +10,10 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1cabb4cc0148fd446b51d534544cbec2, type: 3}
-  m_Name: LightAttack
+  m_Name: HeavyAttack
   m_EditorClassIdentifier: 
-  startup: 10
+  startup: 100
   active: 410
-  recovery: 10
-  damage: 5
+  recovery: 300
+  damage: 10
   canChain: 1
